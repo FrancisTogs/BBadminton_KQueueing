@@ -1,36 +1,28 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
+	"log"
 	"net/http"
-	"sync"
+	"strconv"
+
+	_ "github.com/go-sql-driver/mysql"
 )
 
-// 1. Define the data model using a struct and JSON tags
 type Player struct {
 	ID    int    `json:"id"`
 	Name  string `json:"name"`
 	Level string `json:"level"`
 }
 
-// 2. Set up an in-memory database and a mutex to prevent concurrent write crashes
-var (
-	players = []Player{
-		{ID: 1, Name: "Kiko", Level: "Low Advanced"},
-		{ID: 2, Name: "Marc", Level: "High Advanced"},
-	}
-	nextID = 3
-	mu     sync.Mutex
-)
+var db *sql.DB
 
-// 3. Handle GET and POST requests
 func playersHandler(w http.ResponseWriter, r *http.Request) {
-	// Enable CORS so your Svelte app on localhost:5173 can access this localhost:8080 API
 	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 
-	// Handle browser preflight checks
 	if r.Method == "OPTIONS" {
 		w.WriteHeader(http.StatusOK)
 		return
@@ -39,28 +31,60 @@ func playersHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
 	switch r.Method {
-	case "GET":
-		// Convert Go struct into JSON and send to Svelte
-		mu.Lock()
-		json.NewEncoder(w).Encode(players)
-		mu.Unlock()
+	case http.MethodGet:
+		rows, err := db.Query("SELECT id, name, level FROM players")
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		defer rows.Close()
 
-	case "POST":
-		// Convert incoming JSON from Svelte into a Go struct
+		players := []Player{}
+		for rows.Next() {
+			var p Player
+			if err := rows.Scan(&p.ID, &p.Name, &p.Level); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			players = append(players, p)
+		}
+		json.NewEncoder(w).Encode(players)
+
+	case http.MethodPost:
 		var newPlayer Player
 		if err := json.NewDecoder(r.Body).Decode(&newPlayer); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 
-		mu.Lock()
-		newPlayer.ID = nextID
-		nextID++
-		players = append(players, newPlayer)
-		mu.Unlock()
+		// Both SQLite and MySQL use ? for parameter binding in Go
+		result, err := db.Exec("INSERT INTO players (name, level) VALUES (?, ?)", newPlayer.Name, newPlayer.Level)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		id, _ := result.LastInsertId()
+		newPlayer.ID = int(id)
 
 		w.WriteHeader(http.StatusCreated)
 		json.NewEncoder(w).Encode(newPlayer)
+
+	case http.MethodDelete:
+		idStr := r.URL.Query().Get("id")
+		id, err := strconv.Atoi(idStr)
+		if err != nil {
+			http.Error(w, "Invalid ID", http.StatusBadRequest)
+			return
+		}
+
+		_, err = db.Exec("DELETE FROM players WHERE id = ?", id)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		w.WriteHeader(http.StatusOK)
 
 	default:
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -68,7 +92,32 @@ func playersHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
+	var err error
+	
+	// Format: username:password@tcp(host:port)/dbname
+	dsn := "root:@tcp(127.0.0.1:3306)/badminton_queue"
+	db, err = sql.Open("mysql", dsn)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer db.Close()
+
+	// Verify the connection is active
+	if err := db.Ping(); err != nil {
+		log.Fatal("Failed to connect to MySQL:", err)
+	}
+
+	// Create table using MySQL's AUTO_INCREMENT syntax
+	createTableSQL := `CREATE TABLE IF NOT EXISTS players (
+		id INT AUTO_INCREMENT PRIMARY KEY,
+		name VARCHAR(255) NOT NULL,
+		level VARCHAR(100) NOT NULL
+	);`
+	if _, err := db.Exec(createTableSQL); err != nil {
+		log.Fatal(err)
+	}
+
 	http.HandleFunc("/api/players", playersHandler)
-	println("Go API is running on http://localhost:8080")
-	http.ListenAndServe(":8080", nil)
+	println("Go MySQL API is running on http://localhost:8080")
+	log.Fatal(http.ListenAndServe(":8080", nil))
 }
