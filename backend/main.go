@@ -20,7 +20,8 @@ var db *sql.DB
 
 func playersHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+	// Added PUT to allowed methods
+	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 
 	if r.Method == "OPTIONS" {
@@ -57,7 +58,6 @@ func playersHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Both SQLite and MySQL use ? for parameter binding in Go
 		result, err := db.Exec("INSERT INTO players (name, level) VALUES (?, ?)", newPlayer.Name, newPlayer.Level)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -69,6 +69,24 @@ func playersHandler(w http.ResponseWriter, r *http.Request) {
 
 		w.WriteHeader(http.StatusCreated)
 		json.NewEncoder(w).Encode(newPlayer)
+
+	case http.MethodPut:
+		// Decode the updated player data
+		var updatedPlayer Player
+		if err := json.NewDecoder(r.Body).Decode(&updatedPlayer); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		// Update the database record matching the ID
+		_, err := db.Exec("UPDATE players SET name = ?, level = ? WHERE id = ?", updatedPlayer.Name, updatedPlayer.Level, updatedPlayer.ID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(updatedPlayer)
 
 	case http.MethodDelete:
 		idStr := r.URL.Query().Get("id")
@@ -94,7 +112,7 @@ func playersHandler(w http.ResponseWriter, r *http.Request) {
 func main() {
 	var err error
 	
-	// Format: username:password@tcp(host:port)/dbname
+	// Make sure this DSN matches the one that successfully connected earlier
 	dsn := "root:@tcp(127.0.0.1:3306)/badminton_queue"
 	db, err = sql.Open("mysql", dsn)
 	if err != nil {
@@ -102,12 +120,10 @@ func main() {
 	}
 	defer db.Close()
 
-	// Verify the connection is active
 	if err := db.Ping(); err != nil {
 		log.Fatal("Failed to connect to MySQL:", err)
 	}
 
-	// Create table using MySQL's AUTO_INCREMENT syntax
 	createTableSQL := `CREATE TABLE IF NOT EXISTS players (
 		id INT AUTO_INCREMENT PRIMARY KEY,
 		name VARCHAR(255) NOT NULL,
