@@ -16,7 +16,16 @@
   }
 
   // --- State Definitions ---
-  type Player = { id: number, name: string, level: string, status: string, waitStartTime: number, totalGames: number, totalWaitingTime: number };
+ type Player = { 
+  id: number, 
+  name: string, 
+  level: string, 
+  status: string, 
+  waitStartTime: number, 
+  totalGames: number, 
+  totalWins: number, 
+  totalWaitingTime: number 
+};
   let players = $state<Player[]>([]);
 
   let courts = $state(
@@ -244,7 +253,6 @@
       const endUnix = Math.floor(Date.now() / 1000);
 
       try {
-        // Send the single transaction to the Go Backend
         await fetch('http://localhost:8080/api/matches/finish', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -253,11 +261,11 @@
             score: `${scoreT1} - ${scoreT2}`,
             startUnix: match.startUnix,
             endUnix: endUnix,
-            playerIds: [match.p1Id, match.p2Id, match.p3Id, match.p4Id]
+            // Explicitly pass the 4 individual IDs into the array expected by Go
+            playerIds: [Number(match.p1Id), Number(match.p2Id), Number(match.p3Id), Number(match.p4Id)]
           })
         });
 
-        // Pull the freshly updated data directly from the server
         await loadHistory();
         await loadPlayers();
 
@@ -342,9 +350,9 @@
                 {:else}
                   {#each advancedPlayers as player}
                     <button class="player-chip" onclick={() => openPlayerModal(player)}>
-                      {player.name} ({player.level})
-                      <!-- Displays total historical games and accumulated wait time -->
-                      <span class="chip-stats">🎮 {player.totalGames} | ⌛ {formatDuration(0, player.totalWaitingTime)}</span>
+                    {player.name} ({player.level})
+                    <!-- Displays wins / total games and accumulated wait time -->
+                    <span class="chip-stats">🏆 {player.totalWins}/🎮{player.totalGames} | ⌛ {formatDuration(0, player.totalWaitingTime)}</span>
                     </button>
                   {/each}
                 {/if}
@@ -361,7 +369,8 @@
                   {#each intermediatePlayers as player}
                     <button class="player-chip" onclick={() => openPlayerModal(player)}>
                       {player.name} ({player.level})
-                      <span class="chip-stats">🎮 {player.totalGames} | ⌛ {formatDuration(0, player.totalWaitingTime)}</span>
+                    <!-- Displays wins / total games and accumulated wait time -->
+                    <span class="chip-stats">🏆 {player.totalWins}/🎮{player.totalGames} | ⌛ {formatDuration(0, player.totalWaitingTime)}</span>
                     </button>
                   {/each}
                 {/if}
@@ -378,7 +387,8 @@
                   {#each beginnerPlayers as player}
                     <button class="player-chip" onclick={() => openPlayerModal(player)}>
                       {player.name} ({player.level})
-                      <span class="chip-stats">🎮 {player.totalGames} | ⌛ {formatDuration(0, player.totalWaitingTime)}</span>
+                      <!-- Displays wins / total games and accumulated wait time -->
+                      <span class="chip-stats">🏆 {player.totalWins}/🎮{player.totalGames} | ⌛ {formatDuration(0, player.totalWaitingTime)}</span>
                     </button>
                   {/each}
                 {/if}
@@ -459,12 +469,43 @@
     {:else}
       <div class="history-list">
         {#each matchHistory.slice().reverse() as history}
-          <div class="history-item">
-            <div class="history-details">
-              <div class="history-teams">{history.name}</div>
-              <div class="history-times">🕒 {formatTime(history.startUnix)} - {formatTime(history.endUnix)}</div>
+          {@const parts = history.name.split(" vs ")}
+          {@const team1Players = parts[0] ? parts[0].split(" & ") : ["Player 1", "Player 2"]}
+          {@const team2Players = parts[1] ? parts[1].split(" & ") : ["Player 3", "Player 4"]}
+          
+          {@const scores = history.score ? history.score.split("-").map((s: string) => parseInt(s.trim()) || 0) : [0, 0]}
+          {@const t1Score = scores[0]}
+          {@const t2Score = scores[1]}
+          
+          {@const t1Won = t1Score > t2Score}
+          {@const t2Won = t2Score > t1Score}
+
+          <div class="history-card">
+            <div class="history-header">
+              <span class="history-times">🕒 {formatTime(history.startUnix)} - {formatTime(history.endUnix)}</span>
             </div>
-            <div class="history-score-badge">{history.score}</div>
+            
+            <div class="history-grid">
+              <!-- Team 1 Side -->
+              <div class="history-team-box {t1Won ? 'winner-team' : ''}">
+                <div class="team-label-header">Team 1 {#if t1Won}👑{/if}</div>
+                <div class="history-player-name">{team1Players[0]}</div>
+                <div class="history-player-name">{team1Players[1]}</div>
+              </div>
+
+              <!-- VS & Score Center -->
+              <div class="history-center-box">
+                <span class="history-vs">VS</span>
+                <div class="history-score-badge">{history.score}</div>
+              </div>
+
+              <!-- Team 2 Side -->
+              <div class="history-team-box {t2Won ? 'winner-team' : ''}">
+                <div class="team-label-header">Team 2 {#if t2Won}👑{/if}</div>
+                <div class="history-player-name">{team2Players[0]}</div>
+                <div class="history-player-name">{team2Players[1]}</div>
+              </div>
+            </div>
           </div>
         {/each}
       </div>
@@ -690,4 +731,22 @@
     .modal-right-actions { width: 100%; justify-content: space-between; }
     .danger-btn { width: 100%; }
   }
+  /* Enhanced Match History Card Styles */
+  .history-list { display: flex; flex-direction: column; gap: 1rem; }
+  .history-card { background: #fafafa; padding: 1rem; border-radius: 8px; border: 1px solid #e5e4e7; display: flex; flex-direction: column; gap: 0.8rem; }
+  .history-header { display: flex; justify-content: flex-end; border-bottom: 1px solid #eee; padding-bottom: 0.4rem; }
+  .history-times { color: #95a5a6; font-size: 0.85rem; }
+  
+  .history-grid { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+  .history-team-box { flex: 1; background: #ffffff; padding: 0.8rem; border-radius: 6px; border: 1px solid #e5e4e7; text-align: center; transition: all 0.2s; }
+  .team-label-header { font-size: 0.75rem; font-weight: bold; text-transform: uppercase; color: #7f8c8d; margin-bottom: 0.4rem; }
+  .history-player-name { font-weight: 600; color: #2c3e50; font-size: 0.95rem; margin: 0.2rem 0; }
+  
+  .history-center-box { display: flex; flex-direction: column; align-items: center; gap: 0.4rem; }
+  .history-vs { background: #e74c3c; color: white; font-weight: bold; font-size: 0.75rem; padding: 0.2rem 0.5rem; border-radius: 12px; }
+  .history-score-badge { background: #2c3e50; color: white; padding: 0.4rem 0.8rem; border-radius: 6px; font-weight: bold; font-size: 1.1rem; letter-spacing: 1px; }
+
+  /* Winner Highlighting */
+  .winner-team { background: #ebf9f1 !important; border-color: #2ecc71 !important; box-shadow: 0 0 8px rgba(46, 204, 113, 0.2); }
+  .winner-team .team-label-header { color: #27ae60; font-weight: 800; }
 </style>

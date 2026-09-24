@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	_ "github.com/go-sql-driver/mysql"
@@ -18,6 +19,7 @@ type Player struct {
 	Status           string `json:"status"`
 	WaitStartTime    int64  `json:"waitStartTime"`
 	TotalGames       int    `json:"totalGames"`
+	TotalWins        int    `json:"totalWins"`
 	TotalWaitingTime int64  `json:"totalWaitingTime"`
 }
 
@@ -34,7 +36,7 @@ type FinishMatchRequest struct {
 	Score     string `json:"score"`
 	StartUnix int64  `json:"startUnix"`
 	EndUnix   int64  `json:"endUnix"`
-	PlayerIDs []int  `json:"playerIds"`
+	PlayerIDs []int  `json:"playerIds"` // [p1, p2, p3, p4] -> First 2 are Team 1, last 2 are Team 2
 }
 
 var db *sql.DB
@@ -52,11 +54,13 @@ func setCORS(w http.ResponseWriter, r *http.Request) bool {
 }
 
 func playersHandler(w http.ResponseWriter, r *http.Request) {
-	if setCORS(w, r) { return }
+	if setCORS(w, r) {
+		return
+	}
 
 	switch r.Method {
 	case http.MethodGet:
-		rows, err := db.Query("SELECT id, name, level, status, wait_start_time, total_games, total_waiting_time FROM players")
+		rows, err := db.Query("SELECT id, name, level, status, wait_start_time, total_games, total_wins, total_waiting_time FROM players")
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -66,7 +70,7 @@ func playersHandler(w http.ResponseWriter, r *http.Request) {
 		players := []Player{}
 		for rows.Next() {
 			var p Player
-			if err := rows.Scan(&p.ID, &p.Name, &p.Level, &p.Status, &p.WaitStartTime, &p.TotalGames, &p.TotalWaitingTime); err != nil {
+			if err := rows.Scan(&p.ID, &p.Name, &p.Level, &p.Status, &p.WaitStartTime, &p.TotalGames, &p.TotalWins, &p.TotalWaitingTime); err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
@@ -81,7 +85,7 @@ func playersHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		now := time.Now().Unix()
-		result, err := db.Exec("INSERT INTO players (name, level, status, wait_start_time, total_games, total_waiting_time) VALUES (?, ?, ?, ?, 0, 0)", 
+		result, err := db.Exec("INSERT INTO players (name, level, status, wait_start_time, total_games, total_wins, total_waiting_time) VALUES (?, ?, ?, ?, 0, 0, 0)",
 			p.Name, p.Level, "waiting", now)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -100,7 +104,7 @@ func playersHandler(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		_, err := db.Exec("UPDATE players SET name=?, level=?, status=?, wait_start_time=? WHERE id=?", 
+		_, err := db.Exec("UPDATE players SET name=?, level=?, status=?, wait_start_time=? WHERE id=?",
 			p.Name, p.Level, p.Status, p.WaitStartTime, p.ID)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -116,7 +120,9 @@ func playersHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func historyHandler(w http.ResponseWriter, r *http.Request) {
-	if setCORS(w, r) { return }
+	if setCORS(w, r) {
+		return
+	}
 
 	if r.Method == http.MethodGet {
 		rows, err := db.Query("SELECT id, name, score, start_unix, end_unix FROM match_history ORDER BY id ASC")
@@ -140,7 +146,9 @@ func historyHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func finishMatchHandler(w http.ResponseWriter, r *http.Request) {
-	if setCORS(w, r) { return }
+	if setCORS(w, r) {
+		return
+	}
 
 	if r.Method == http.MethodPost {
 		var req FinishMatchRequest
@@ -150,23 +158,47 @@ func finishMatchHandler(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// 1. Save to Match History Table
-		_, err := db.Exec("INSERT INTO match_history (name, score, start_unix, end_unix) VALUES (?, ?, ?, ?)", 
+		_, err := db.Exec("INSERT INTO match_history (name, score, start_unix, end_unix) VALUES (?, ?, ?, ?)",
 			req.Name, req.Score, req.StartUnix, req.EndUnix)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 
-		// 2. Update stats for all 4 players
-		// Wait time is (Match Start Time - Player's Wait Start Time). We use GREATEST(0, ...) to prevent negative math.
-		for _, playerID := range req.PlayerIDs {
+		// Parse scores safely
+		t1Score, t2Score := 0, 0
+		parts := strings.Split(req.Score, "-")
+		if len(parts) == 2 {
+			t1Score, _ = strconv.Atoi(strings.TrimSpace(parts[0]))
+			t2Score, _ = strconv.Atoi(strings.TrimSpace(parts[1]))
+		}
+
+		t1Won := t1Score > t2Score
+		t2Won := t2Score > t1Score
+
+		// Update stats for all 4 players
+		for i, playerID := range req.PlayerIDs {
+			// Index 0 and 1 belong to Team 1, Index 2 and 3 belong to Team 2
+			isWinner := false
+			if i < 2 && t1Won {
+				isWinner = true
+			} else if i >= 2 && t2Won {
+				isWinner = true
+			}
+
+			winIncrement := 0
+			if isWinner {
+				winIncrement = 1
+			}
+
 			_, err = db.Exec(`
 				UPDATE players 
 				SET total_games = total_games + 1, 
+				    total_wins = total_wins + ?,
 				    total_waiting_time = total_waiting_time + GREATEST(0, ? - wait_start_time), 
 				    wait_start_time = ? 
-				WHERE id = ?`, 
-				req.StartUnix, req.EndUnix, playerID)
+				WHERE id = ?`,
+				winIncrement, req.StartUnix, req.EndUnix, playerID)
 			if err != nil {
 				log.Println("Error updating player stats:", err)
 			}
@@ -179,10 +211,12 @@ func main() {
 	var err error
 	dsn := "root:@tcp(127.0.0.1:3306)/badminton_queue"
 	db, err = sql.Open("mysql", dsn)
-	if err != nil { log.Fatal(err) }
+	if err != nil {
+		log.Fatal(err)
+	}
 	defer db.Close()
 
-	// Initialize updated players table
+	// Initialize updated players table with total_wins
 	db.Exec(`CREATE TABLE IF NOT EXISTS players (
 		id INT AUTO_INCREMENT PRIMARY KEY,
 		name VARCHAR(255) NOT NULL,
@@ -190,10 +224,10 @@ func main() {
 		status VARCHAR(50) NOT NULL,
 		wait_start_time BIGINT NOT NULL,
 		total_games INT NOT NULL DEFAULT 0,
+		total_wins INT NOT NULL DEFAULT 0,
 		total_waiting_time BIGINT NOT NULL DEFAULT 0
 	);`)
 
-	// Initialize new match history table
 	db.Exec(`CREATE TABLE IF NOT EXISTS match_history (
 		id INT AUTO_INCREMENT PRIMARY KEY,
 		name VARCHAR(255) NOT NULL,
