@@ -15,6 +15,9 @@
     return `${m}m ${s}s`;
   }
 
+  // --- Navigation State ---
+  let currentView = $state<'dashboard' | 'queuePage' | 'rankingsPage'>('dashboard');
+
   // --- State Definitions ---
  type Player = { 
   id: number, 
@@ -55,13 +58,21 @@
   let queuedPlayerIds = $derived(new Set(waitingQueue.flatMap(m => [m.p1Id, m.p2Id, m.p3Id, m.p4Id])));
   let activePlayerIds = $derived(new Set(courts.filter(c => !c.isAvailable && c.activeMatch).flatMap(c => [c.activeMatch.p1Id, c.activeMatch.p2Id, c.activeMatch.p3Id, c.activeMatch.p4Id])));
   let busyPlayerIds = $derived(new Set([...queuedPlayerIds, ...activePlayerIds]));
-
+  
+  let bulkPlayerNames = $state('');
+  let bulkPlayerLevel = $state('Low Beginner');
+  let isBulkModalOpen = $state(false);
+  
+  
   let availablePlayers = $derived(
     players
       .filter(player => !busyPlayerIds.has(player.id))
       .sort((a, b) => a.waitStartTime - b.waitStartTime)
   );
 
+  let availableAdvanced = $derived(availablePlayers.filter(p => p.level.includes("Advanced")));
+  let availableIntermediate = $derived(availablePlayers.filter(p => p.level.includes("Intermediate")));
+  let availableBeginner = $derived(availablePlayers.filter(p => p.level.includes("Beginner")));
   let selectedPlayerIds = $state<number[]>([]);
 
   $effect(() => {
@@ -84,6 +95,13 @@
   let scoreCourtId = $state<number | null>(null);
   let scoreT1 = $state('');
   let scoreT2 = $state('');
+
+  let rankedPlayers = $derived([...players].sort((a, b) => {
+    const rateA = a.totalGames > 0 ? a.totalWins / a.totalGames : 0;
+    const rateB = b.totalGames > 0 ? b.totalWins / b.totalGames : 0;
+    if (rateB !== rateA) return rateB - rateA;
+    return b.totalWins - a.totalWins;
+  }));
 
   // --- API Fetch Logic ---
   onMount(async () => {
@@ -125,6 +143,43 @@
       }
     } catch (error) { console.error("Failed to add player:", error); }
   }
+
+  async function addBulkPlayers() {
+    if (!bulkPlayerNames.trim()) return;
+    
+    // Split names by new lines or commas
+    const names = bulkPlayerNames
+      .split(/[\n,]+/)
+      .map(name => name.trim())
+      .filter(name => name.length > 0);
+
+    if (names.length === 0) return;
+
+    const payload = names.map(name => ({
+      name: name,
+      level: bulkPlayerLevel
+    }));
+
+    try {
+      const response = await fetch('http://localhost:8080/api/players/bulk', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+
+      if (response.ok) {
+        const newPlayers = await response.json();
+        players = [...players, ...(newPlayers || [])];
+        bulkPlayerNames = '';
+        isBulkModalOpen = false;
+      }
+    } catch (error) { 
+      console.error("Failed to add bulk players:", error); 
+    }
+  }
+
+  function openBulkModal() { isBulkModalOpen = true; }
+  function closeBulkModal() { isBulkModalOpen = false; bulkPlayerNames = ''; }
 
   async function saveEditedPlayer() {
     if (editPlayerName.trim() !== '' && editPlayerId !== null) {
@@ -282,43 +337,37 @@
 <main class="container">
   <h1>Badminton Queue Manager</h1>
 
-  <!-- SECTION 1: Active Courts -->
-  <section class="card">
-    <div class="header-with-action">
-      <h2>1. Active Courts</h2>
-      <div class="add-court-controls">
-        <button class="secondary-btn" onclick={addCourt}>+ Add Court</button>
-      </div>
-    </div>
-    
-    <div class="courts-grid">
-      {#each courts as court}
-        <div class="court {court.isAvailable ? 'available' : 'occupied'}">
-          <div class="court-header">
-            <input class="court-name-input" bind:value={court.name} />
-            <div class="court-header-actions">
-              <span class="status">{court.isAvailable ? 'Open' : 'In Use'}</span>
-              <button class="delete-icon-btn" title="Delete Court" onclick={() => deleteCourt(court.id)}>✕</button>
-            </div>
-          </div>
-          
-          <div class="court-players">
-            {#if court.isAvailable}
-              <p class="empty-text">Waiting for players...</p>
-            {:else}
-              <p class="playing">{court.activeMatch.name}</p>
-              <p class="time-started">Match Time: ⏳ <ElapsedTime startUnix={court.activeMatch.startUnix} /></p>
-              <button class="clear-btn" onclick={() => openScoreModal(court.id)}>End Match & Score</button>
-            {/if}
-          </div>
-        </div>
-      {/each}
-    </div>
-  </section>
+  <!-- Navigation Bar -->
+  <nav class="page-nav">
+    <button 
+      class="nav-tab {currentView === 'dashboard' ? 'active-tab' : ''}" 
+      onclick={() => currentView = 'dashboard'}
+    >
+      🏟️ Players & History
+    </button>
+    <button 
+      class="nav-tab {currentView === 'queuePage' ? 'active-tab' : ''}" 
+      onclick={() => currentView = 'queuePage'}
+    >
+      🚀 Queue & Matchmaking 
+      {#if waitingQueue.length > 0}
+        <span class="badge-count">{waitingQueue.length}</span>
+      {/if}
+    </button>
+    <button 
+      class="nav-tab {currentView === 'rankingsPage' ? 'active-tab' : ''}" 
+      onclick={() => currentView = 'rankingsPage'}
+    >
+      🏆 Leaderboard & Rankings
+    </button>
+  </nav>
 
-  <!-- SECTION 2: Registered Players Table -->
+  {#if currentView === 'dashboard'}
+    <!-- ================= PAGE 1: DASHBOARD ================= -->
+    
+    <!-- SECTION 2: Registered Players -->
   <section class="card">
-    <h2>2. Registered Players</h2>
+    <h2>1. Registered Players ({players.length})</h2>
     <div class="form-row">
       <input type="text" bind:value={newPlayerName} placeholder="Enter player name" />
       <select bind:value={newPlayerLevel}>
@@ -330,187 +379,302 @@
         <option>High Advanced</option>
       </select>
       <button class="primary-btn" onclick={addPlayer}>Add Player</button>
+      <button class="secondary-btn" onclick={openBulkModal}><span>+</span><span>Bulk Add</span></button>
     </div>
 
-    <div class="table-container">
-      <table class="registered-table">
-        <thead>
-          <tr>
-            <th style="width: 180px;">Tier</th>
-            <th>Registered Players</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td class="tier-cell advanced-tier">Advanced</td>
-            <td>
-              <div class="player-pool-table">
-                {#if advancedPlayers.length === 0}
-                  <span class="empty-row-text">No advanced players registered.</span>
-                {:else}
-                  {#each advancedPlayers as player}
-                    <button class="player-chip" onclick={() => openPlayerModal(player)}>
-                    {player.name} ({player.level})
-                    <!-- Displays wins / total games and accumulated wait time -->
-                    <span class="chip-stats">🏆 {player.totalWins}/🎮{player.totalGames} | ⌛ {formatDuration(0, player.totalWaitingTime)}</span>
-                    </button>
-                  {/each}
-                {/if}
-              </div>
-            </td>
-          </tr>
-          <tr>
-            <td class="tier-cell intermediate-tier">Intermediate</td>
-            <td>
-              <div class="player-pool-table">
-                {#if intermediatePlayers.length === 0}
-                  <span class="empty-row-text">No intermediate players registered.</span>
-                {:else}
-                  {#each intermediatePlayers as player}
-                    <button class="player-chip" onclick={() => openPlayerModal(player)}>
-                      {player.name} ({player.level})
-                    <!-- Displays wins / total games and accumulated wait time -->
-                    <span class="chip-stats">🏆 {player.totalWins}/🎮{player.totalGames} | ⌛ {formatDuration(0, player.totalWaitingTime)}</span>
-                    </button>
-                  {/each}
-                {/if}
-              </div>
-            </td>
-          </tr>
-          <tr>
-            <td class="tier-cell beginner-tier">Beginner</td>
-            <td>
-              <div class="player-pool-table">
-                {#if beginnerPlayers.length === 0}
-                  <span class="empty-row-text">No beginner players registered.</span>
-                {:else}
-                  {#each beginnerPlayers as player}
-                    <button class="player-chip" onclick={() => openPlayerModal(player)}>
-                      {player.name} ({player.level})
-                      <!-- Displays wins / total games and accumulated wait time -->
-                      <span class="chip-stats">🏆 {player.totalWins}/🎮{player.totalGames} | ⌛ {formatDuration(0, player.totalWaitingTime)}</span>
-                    </button>
-                  {/each}
-                {/if}
-              </div>
-            </td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
-    <small class="empty-text">(Click a player to edit or delete)</small>
-  </section>
-
-  <!-- SECTION 3: Available Players & Direct Queue Selection -->
-  <section class="card">
-    <div class="header-with-action">
-      <h2>3. Available Players</h2>
-      <div class="selection-status-group">
-        <span class="team-tag tag-t1">Team 1: {Math.min(selectedPlayerIds.length, 2)}/2</span>
-        <span class="team-tag tag-t2">Team 2: {Math.max(0, selectedPlayerIds.length - 2)}/2</span>
-      </div>
-    </div>
-    <p class="helper-hint">Click 2 players for <strong style="color: #3498db;">Team 1 (Blue)</strong> and 2 players for <strong style="color: #e74c3c;">Team 2 (Red)</strong></p>
-
-    <div class="player-pool available-pool">
-      {#if availablePlayers.length === 0}
-        <p class="empty-text" style="margin: 0; width: 100%;">No available players waiting (all are queued or playing).</p>
+    <div class="player-pool" style="margin-top: 1.5rem;">
+      {#if players.length === 0}
+        <p class="empty-text" style="margin: 0; width: 100%;">No players registered yet.</p>
       {:else}
-        {#each availablePlayers as player}
-          {@const index = selectedPlayerIds.indexOf(player.id)}
-          {@const isTeam1 = index === 0 || index === 1}
-          {@const isTeam2 = index === 2 || index === 3}
-          <button 
-            class="player-chip selectable-chip {isTeam1 ? 'selected-team1' : ''} {isTeam2 ? 'selected-team2' : ''}" 
-            onclick={() => togglePlayerSelection(player.id)}
-          >
-            <span class="checkbox-indicator">{#if isTeam1}T1{:else if isTeam2}T2{:else}+{/if}</span>
-            {player.name} ({player.level})
-            <span class="chip-time">⏳ <ElapsedTime startUnix="{player.waitStartTime}"/></span>
+        {#each sortedPlayers as player}
+          <button class="player-chip" onclick={() => openPlayerModal(player)}>
+            <span class="chip-content">
+              <span class="chip-name">{player.name}</span>
+              <span class="chip-level">{player.level}</span>
+            </span>
+            <span class="chip-stats">🏆 {player.totalWins}/🎮{player.totalGames}</span>
           </button>
         {/each}
       {/if}
     </div>
-
-    {#if selectedPlayerIds.length === 4}
-      <button class="primary-btn action-btn full-width" onclick={queueSelectedMatch}>
-        🚀 Queue Match (Team 1 vs Team 2)
-      </button>
-    {/if}
+    <small class="empty-text" style="display: block; margin-top: 1rem;">(Click a player to edit or delete)</small>
   </section>
 
-  <!-- SECTION 4: Queued Matches -->
-  <section class="card">
-    <h2>4. Queued Matches ({waitingQueue.length})</h2>
-    <div class="queue-list">
-      {#each waitingQueue as match, index}
-        <div class="queue-item">
-          <div class="team-info">
-            <span class="queue-number">#{index + 1}</span>
-            <div>
-              <div class="team-name">{match.name}</div>
-              <span class="match-badge">{match.type}</span>
+    <!-- SECTION 5: Match History -->
+    <section class="card">
+      <h2>2. Match History</h2>
+      {#if matchHistory.length === 0}
+        <p class="empty-text">No matches have been completed yet.</p>
+      {:else}
+        <div class="history-list">
+          {#each matchHistory.slice().reverse() as history}
+            {@const parts = history.name.split(" vs ")}
+            {@const team1Players = parts[0] ? parts[0].split(" & ") : ["Player 1", "Player 2"]}
+            {@const team2Players = parts[1] ? parts[1].split(" & ") : ["Player 3", "Player 4"]}
+            
+            {@const scores = history.score ? history.score.split("-").map((s: string) => parseInt(s.trim()) || 0) : [0, 0]}
+            {@const t1Score = scores[0]}
+            {@const t2Score = scores[1]}
+            
+            {@const t1Won = t1Score > t2Score}
+            {@const t2Won = t2Score > t1Score}
+
+            <div class="history-card">
+              <div class="history-header">
+                <span class="history-times">🕒 {formatTime(history.startUnix)} - {formatTime(history.endUnix)}</span>
+              </div>
+              
+              <div class="history-grid">
+                <div class="history-team-box {t1Won ? 'winner-team' : ''}">
+                  <div class="team-label-header">Team 1 {#if t1Won}👑{/if}</div>
+                  <div class="history-player-name">{team1Players[0]}</div>
+                  <div class="history-player-name">{team1Players[1]}</div>
+                </div>
+
+                <div class="history-center-box">
+                  <span class="history-vs">VS</span>
+                  <div class="history-score-badge">{history.score}</div>
+                </div>
+
+                <div class="history-team-box {t2Won ? 'winner-team' : ''}">
+                  <div class="team-label-header">Team 2 {#if t2Won}👑{/if}</div>
+                  <div class="history-player-name">{team2Players[0]}</div>
+                  <div class="history-player-name">{team2Players[1]}</div>
+                </div>
+              </div>
             </div>
-          </div>
-          <div class="queue-actions">
-            <button class="edit-btn" onclick={() => openEditModal(match.id)}>Edit</button>
-            <button class="play-btn" onclick={() => startMatch(match.id)}>Send to Court ▶</button>
-          </div>
+          {/each}
         </div>
-      {/each}
-    </div>
-  </section>
+      {/if}
+    </section>
 
-  <!-- SECTION 5: Match History -->
-  <section class="card">
-    <h2>5. Match History</h2>
-    {#if matchHistory.length === 0}
-      <p class="empty-text">No matches have been completed yet.</p>
-    {:else}
-      <div class="history-list">
-        {#each matchHistory.slice().reverse() as history}
-          {@const parts = history.name.split(" vs ")}
-          {@const team1Players = parts[0] ? parts[0].split(" & ") : ["Player 1", "Player 2"]}
-          {@const team2Players = parts[1] ? parts[1].split(" & ") : ["Player 3", "Player 4"]}
-          
-          {@const scores = history.score ? history.score.split("-").map((s: string) => parseInt(s.trim()) || 0) : [0, 0]}
-          {@const t1Score = scores[0]}
-          {@const t2Score = scores[1]}
-          
-          {@const t1Won = t1Score > t2Score}
-          {@const t2Won = t2Score > t1Score}
+    
+  {:else if currentView === 'queuePage'}
+    <!-- ================= PAGE 2: QUEUE & MATCHMAKING ================= -->
 
-          <div class="history-card">
-            <div class="history-header">
-              <span class="history-times">🕒 {formatTime(history.startUnix)} - {formatTime(history.endUnix)}</span>
+    <!-- SECTION 1: Active Courts -->
+    <section class="card">
+      <div class="header-with-action">
+        <h2>1. Active Courts</h2>
+        <div class="add-court-controls">
+          <button class="secondary-btn" onclick={addCourt}>+ Add Court</button>
+        </div>
+      </div>
+      
+      <div class="courts-grid">
+        {#each courts as court}
+          <div class="court {court.isAvailable ? 'available' : 'occupied'}">
+            <div class="court-header">
+              <input class="court-name-input" bind:value={court.name} />
+              <div class="court-header-actions">
+                <span class="status">{court.isAvailable ? 'Open' : 'In Use'}</span>
+                <button class="delete-icon-btn" title="Delete Court" onclick={() => deleteCourt(court.id)}>✕</button>
+              </div>
             </div>
             
-            <div class="history-grid">
-              <!-- Team 1 Side -->
-              <div class="history-team-box {t1Won ? 'winner-team' : ''}">
-                <div class="team-label-header">Team 1 {#if t1Won}👑{/if}</div>
-                <div class="history-player-name">{team1Players[0]}</div>
-                <div class="history-player-name">{team1Players[1]}</div>
-              </div>
-
-              <!-- VS & Score Center -->
-              <div class="history-center-box">
-                <span class="history-vs">VS</span>
-                <div class="history-score-badge">{history.score}</div>
-              </div>
-
-              <!-- Team 2 Side -->
-              <div class="history-team-box {t2Won ? 'winner-team' : ''}">
-                <div class="team-label-header">Team 2 {#if t2Won}👑{/if}</div>
-                <div class="history-player-name">{team2Players[0]}</div>
-                <div class="history-player-name">{team2Players[1]}</div>
-              </div>
+            <div class="court-players">
+              {#if court.isAvailable}
+                <p class="empty-text">Waiting for players...</p>
+              {:else}
+                <p class="playing">{court.activeMatch.name}</p>
+                <p class="time-started">Match Time: ⏳ <ElapsedTime startUnix={court.activeMatch.startUnix} /></p>
+                <button class="clear-btn" onclick={() => openScoreModal(court.id)}>End Match & Score</button>
+              {/if}
             </div>
           </div>
         {/each}
       </div>
-    {/if}
-  </section>
+    </section>
+
+    <!-- SECTION 3: Available Players & Direct Queue Selection -->
+    <section class="card">
+      <div class="header-with-action">
+        <h2>2. Available Players by Tier</h2>
+        <div class="selection-status-group">
+          <span class="team-tag tag-t1">Team 1: {Math.min(selectedPlayerIds.length, 2)}/2</span>
+          <span class="team-tag tag-t2">Team 2: {Math.max(0, selectedPlayerIds.length - 2)}/2</span>
+        </div>
+      </div>
+      <p class="helper-hint">Click 2 players for <strong style="color: #3498db;">Team 1 (Blue)</strong> and 2 players for <strong style="color: #e74c3c;">Team 2 (Red)</strong></p>
+
+      <div class="table-container">
+        <table class="registered-table">
+          <thead>
+            <tr>
+              <th style="width: 180px;">Tier</th>
+              <th>Available Players Waiting</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="tier-cell advanced-tier">Advanced</td>
+              <td>
+                <div class="player-pool-table">
+                  {#if availableAdvanced.length === 0}
+                    <span class="empty-row-text">No advanced players available.</span>
+                  {:else}
+                    {#each availableAdvanced as player}
+                      {@const index = selectedPlayerIds.indexOf(player.id)}
+                      {@const isTeam1 = index === 0 || index === 1}
+                      {@const isTeam2 = index === 2 || index === 3}
+                      <button 
+                        class="player-chip selectable-chip {isTeam1 ? 'selected-team1' : ''} {isTeam2 ? 'selected-team2' : ''}" 
+                        onclick={() => togglePlayerSelection(player.id)}
+                      >
+                        <span class="checkbox-indicator">{#if isTeam1}T1{:else if isTeam2}T2{:else}+{/if}</span>
+                          <span class="chip-content">
+                           <span class="chip-name">{player.name}</span>
+                           <span class="chip-level">{player.level}</span>
+                          </span>
+                        <span class="chip-time">⏳ <ElapsedTime startUnix="{player.waitStartTime}"/></span>
+                      </button>
+                    {/each}
+                  {/if}
+                </div>
+              </td>
+            </tr>
+            <tr>
+              <td class="tier-cell intermediate-tier">Intermediate</td>
+              <td>
+                <div class="player-pool-table">
+                  {#if availableIntermediate.length === 0}
+                    <span class="empty-row-text">No intermediate players available.</span>
+                  {:else}
+                    {#each availableIntermediate as player}
+                      {@const index = selectedPlayerIds.indexOf(player.id)}
+                      {@const isTeam1 = index === 0 || index === 1}
+                      {@const isTeam2 = index === 2 || index === 3}
+                      <button 
+                        class="player-chip selectable-chip {isTeam1 ? 'selected-team1' : ''} {isTeam2 ? 'selected-team2' : ''}" 
+                        onclick={() => togglePlayerSelection(player.id)}
+                      >
+                        <span class="checkbox-indicator">{#if isTeam1}T1{:else if isTeam2}T2{:else}+{/if}</span>
+                        <span class="chip-content">
+                           <span class="chip-name">{player.name}</span>
+                           <span class="chip-level">{player.level}</span>
+                          </span>
+                        <span class="chip-time">⏳ <ElapsedTime startUnix="{player.waitStartTime}"/></span>
+                      </button>
+                    {/each}
+                  {/if}
+                </div>
+              </td>
+            </tr>
+            <tr>
+              <td class="tier-cell beginner-tier">Beginner</td>
+              <td>
+                <div class="player-pool-table">
+                  {#if availableBeginner.length === 0}
+                    <span class="empty-row-text">No beginner players available.</span>
+                  {:else}
+                    {#each availableBeginner as player}
+                      {@const index = selectedPlayerIds.indexOf(player.id)}
+                      {@const isTeam1 = index === 0 || index === 1}
+                      {@const isTeam2 = index === 2 || index === 3}
+                      <button 
+                        class="player-chip selectable-chip {isTeam1 ? 'selected-team1' : ''} {isTeam2 ? 'selected-team2' : ''}" 
+                        onclick={() => togglePlayerSelection(player.id)}
+                      >
+                        <span class="checkbox-indicator">{#if isTeam1}T1{:else if isTeam2}T2{:else}+{/if}</span>
+                        <!-- Stacked Name and Rank/Level -->
+                        <span class="chip-content">
+                          <span class="chip-name">{player.name}</span>
+                          <span class="chip-level">{player.level}</span>
+                        </span>
+                        <span class="chip-time">⏳ <ElapsedTime startUnix="{player.waitStartTime}"/></span>
+                      </button>
+                    {/each}
+                  {/if}
+                </div>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      {#if selectedPlayerIds.length === 4}
+        <button class="primary-btn action-btn full-width" onclick={queueSelectedMatch}>
+          🚀 Queue Match (Team 1 vs Team 2)
+        </button>
+      {/if}
+    </section>
+
+    <!-- SECTION 4: Queued Matches -->
+    <section class="card">
+      <h2>3. Queued Matches ({waitingQueue.length})</h2>
+      <div class="queue-list">
+        {#if waitingQueue.length === 0}
+          <p class="empty-text">No matches currently in queue.</p>
+        {:else}
+          {#each waitingQueue as match, index}
+            <div class="queue-item">
+              <div class="team-info">
+                <span class="queue-number">#{index + 1}</span>
+                <div>
+                  <div class="team-name">{match.name}</div>
+                  <span class="match-badge">{match.type}</span>
+                </div>
+              </div>
+              <div class="queue-actions">
+                <button class="edit-btn" onclick={() => openEditModal(match.id)}>Edit</button>
+                <button class="play-btn" onclick={() => startMatch(match.id)}>Send to Court ▶</button>
+              </div>
+            </div>
+          {/each}
+        {/if}
+      </div>
+    </section>
+
+    {:else}
+    <!-- ================= PAGE 3: RANKINGS / LEADERBOARD ================= -->
+    <section class="card">
+      <h2>🏆 Player Leaderboard & Rankings</h2>
+      <p class="helper-hint">Players ranked dynamically by highest win rate percentage.</p>
+
+      <div class="table-container">
+        <table class="registered-table">
+          <thead>
+            <tr>
+              <th style="width: 80px; text-align: center;">Rank</th>
+              <th>Player Name</th>
+              <th>Tier Level</th>
+              <th style="text-align: center;">Wins / Total Games</th>
+              <th style="text-align: center;">Win Rate</th>
+            </tr>
+          </thead>
+          <tbody>
+            {#if players.length === 0}
+              <tr>
+                <td colspan="5" class="empty-row-text" style="text-align: center; padding: 2rem;">No players registered yet.</td>
+              </tr>
+            {:else}
+              {#each rankedPlayers as player, index}
+                {@const winRate = player.totalGames > 0 ? ((player.totalWins / player.totalGames) * 100).toFixed(1) : '0.0'}
+                <tr>
+                  <td style="text-align: center; font-weight: bold; color: #64748b;">
+                    {#if index === 0}🥇{:else if index === 1}🥈{:else if index === 2}🥉{:else}#{index + 1}{/if}
+                  </td>
+                  <td>
+                    <span style="font-weight: 600; color: #1e293b;">{player.name}</span>
+                  </td>
+                  <td>
+                    <span class="match-badge">{player.level}</span>
+                  </td>
+                  <td style="text-align: center; font-weight: 500;">
+                    {player.totalWins} / {player.totalGames}
+                  </td>
+                  <td style="text-align: center;">
+                    <span class="team-tag tag-t1" style="font-size: 0.9rem; padding: 0.3rem 0.8rem;">{winRate}%</span>
+                  </td>
+                </tr>
+              {/each}
+            {/if}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  {/if}
+
 </main>
 
 <!-- Player Edit Modal -->
@@ -541,6 +705,7 @@
     </div>
   </div>
 {/if}
+
 
 <!-- Match Edit Modal -->
 {#if isEditModalOpen}
@@ -599,6 +764,40 @@
   </div>
 {/if}
 
+<!-- Bulk Add Modal -->
+{#if isBulkModalOpen}
+  <div class="modal-backdrop" onclick={closeBulkModal} aria-hidden="true"></div>
+  <div class="modal">
+    <div class="modal-header">
+      <h2>Bulk Add Players</h2>
+      <button class="close-icon-btn" onclick={closeBulkModal}>✕</button>
+    </div>
+    <div class="form-row modal-matchup" style="flex-direction: column; align-items: stretch; gap: 1rem;">
+      <p style="margin: 0; color: #7f8c8d; font-size: 0.9rem;">
+        Enter multiple names separated by <strong>commas</strong> or <strong>new lines</strong>. All players will be assigned the selected tier level.
+      </p>
+      <select bind:value={bulkPlayerLevel}>
+        <option>Low Beginner</option>
+        <option>High Beginner</option>
+        <option>Low Intermediate</option>
+        <option>High Intermediate</option>
+        <option>Low Advanced</option>
+        <option>High Advanced</option>
+      </select>
+      <textarea 
+        bind:value={bulkPlayerNames} 
+        placeholder="e.g. Kiko, Myles, Lester&#10;or paste a vertical list of names..." 
+        rows="6"
+        style="padding: 0.8rem; border: 1px solid #ccc; border-radius: 6px; font-size: 1rem; width: 100%; box-sizing: border-box; resize: vertical;"
+      ></textarea>
+    </div>
+    <div class="modal-footer">
+      <button class="secondary-btn" onclick={closeBulkModal}>Cancel</button>
+      <button class="primary-btn" onclick={addBulkPlayers}>Import Players</button>
+    </div>
+  </div>
+{/if}
+
 <style>
   /* Base CSS remains exactly the same, but we add a new class for the chip stats */
   :global(body) { font-family: system-ui, sans-serif; background: #f4f7f6; margin: 0; padding: 2rem; color: #1473d3; }
@@ -614,7 +813,7 @@
   
   .primary-btn { background: #27ae60; color: white; border: none; padding: 0.8rem 1.5rem; border-radius: 6px; font-weight: bold; cursor: pointer; white-space: nowrap; }
   .primary-btn:hover { background: #219a52; }
-  .secondary-btn { background: #ecf0f1; color: #2c3e50; border: 1px solid #bdc3c7; padding: 0.8rem 1rem; border-radius: 6px; font-weight: bold; cursor: pointer; }
+  .secondary-btn { background: #ecf0f1; color: #2c3e50; border: 1px solid #bdc3c7; padding: 0.8rem 1rem; border-radius: 6px; font-weight: bold; cursor: pointer; white-space: nowrap;}
   .secondary-btn:hover { background: #dfe6e9; }
   .danger-btn { background: #e74c3c; color: white; border: none; padding: 0.8rem 1.5rem; border-radius: 6px; font-weight: bold; cursor: pointer; }
   .danger-btn:hover { background: #c0392b; }
@@ -636,7 +835,7 @@
   .intermediate-tier { background-color: #2980b9; }
   .beginner-tier { background-color: #27ae60; }
 
-  .player-pool-table { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
+  .player-pool-table { display: grid; grid-template-columns: repeat(3, auto); grid-auto-flow: row; grid-auto-rows: max-content; overflow-x: auto; gap: 0.5rem; align-items: center; width: 100%;}
   .empty-row-text { color: #95a5a6; font-style: italic; font-size: 0.9rem; }
 
   .player-pool { margin-top: 1rem; padding-top: 0.5rem; display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; font-size: 0.9rem; }
@@ -654,7 +853,15 @@
   .checkbox-indicator { font-weight: bold; font-size: 0.8rem; width: 16px; text-align: center; }
   .chip-time { font-size: 0.75rem; color: #7f8c8d; border-left: 1px solid #dcdde1; padding-left: 0.4rem; }
   .chip-stats { font-size: 0.75rem; color: #2c3e50; border-left: 1px solid #dcdde1; padding-left: 0.4rem; font-weight: 600; }
+  .chip-content { display: flex; flex-direction: column; line-height: 1.25;min-width: 110px;}
+  .chip-name {  font-weight: 700; font-size: 0.95rem; color: #1e293b; }
+  .chip-level { font-size: 0.75rem; color: #64748b; }
 
+  /* Adjust text color for selected team states */
+  .selectable-chip.selected-team1 .chip-name,
+  .selectable-chip.selected-team2 .chip-name {  color: white;}
+  .selectable-chip.selected-team1 .chip-level,
+  .selectable-chip.selected-team2 .chip-level { color: rgba(255, 255, 255, 0.85); }
   .helper-hint { font-size: 0.85rem; color: #7f8c8d; margin: 0 0 1rem 0; font-style: italic; }
   .selection-status-group { display: flex; gap: 0.5rem; }
   .team-tag { font-size: 0.8rem; padding: 0.2rem 0.6rem; border-radius: 12px; font-weight: bold; }
@@ -666,7 +873,7 @@
   .vs-badge { background: #e74c3c; color: white; font-weight: bold; padding: 0.5rem; border-radius: 50%; width: 30px; height: 30px; display: flex; align-items: center; justify-content: center; font-size: 0.9rem; }
 
   .header-with-action { display: flex; justify-content: space-between; align-items: center; }
-  .courts-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 1rem; margin-top: 1rem; }
+  .courts-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; margin-top: 1rem; }
   .court { border: 2px solid #e5e4e7; border-radius: 8px; padding: 1.5rem; display: flex; flex-direction: column; justify-content: space-between; min-height: 140px; transition: all 0.2s ease; }
   .court.available { background: #f8fff9; border-color: #2ecc71; }
   .court.occupied { background: #fff8f8; border-color: #e74c3c; }
@@ -749,4 +956,11 @@
   /* Winner Highlighting */
   .winner-team { background: #ebf9f1 !important; border-color: #2ecc71 !important; box-shadow: 0 0 8px rgba(46, 204, 113, 0.2); }
   .winner-team .team-label-header { color: #27ae60; font-weight: 800; }
+
+  /* Navigation Tabs Styling */
+  .page-nav { display: flex; gap: 1rem; margin-bottom: 2rem; border-bottom: 2px solid #e5e4e7; padding-bottom: 1rem; }
+  .nav-tab { background: #ffffff; border: 1px solid #cbd5e1; color: #64748b; padding: 0.8rem 1.5rem; border-radius: 8px; font-weight: bold; font-size: 1rem; cursor: pointer; transition: all 0.2s; display: flex; align-items: center; gap: 0.5rem; }
+  .nav-tab:hover { background: #f1f5f9; color: #1e293b; }
+  .nav-tab.active-tab { background: #3b82f6; color: white; border-color: #2563eb; box-shadow: 0 4px 6px rgba(59, 130, 246, 0.2); }
+  .badge-count { background: #ef4444; color: white; font-size: 0.75rem; padding: 0.1rem 0.5rem; border-radius: 10px; font-weight: bold; }
 </style>

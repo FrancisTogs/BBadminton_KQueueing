@@ -41,6 +41,65 @@ type FinishMatchRequest struct {
 
 var db *sql.DB
 
+func bulkPlayersHandler(w http.ResponseWriter, r *http.Request) {
+	if setCORS(w, r) {
+		return
+	}
+
+	if r.Method == http.MethodPost {
+		var players []Player
+		if err := json.NewDecoder(r.Body).Decode(&players); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		now := time.Now().Unix()
+		tx, err := db.Begin()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		defer tx.Rollback()
+
+		stmt, err := tx.Prepare("INSERT INTO players (name, level, status, wait_start_time, total_games, total_wins, total_waiting_time) VALUES (?, ?, 'waiting', ?, 0, 0, 0)")
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		defer stmt.Close()
+
+		var insertedPlayers []Player
+		for _, p := range players {
+			if strings.TrimSpace(p.Name) == "" {
+				continue
+			}
+			result, err := stmt.Exec(strings.TrimSpace(p.Name), p.Level, now)
+			if err != nil {
+				continue
+			}
+			id, _ := result.LastInsertId()
+			insertedPlayers = append(insertedPlayers, Player{
+				ID:               int(id),
+				Name:             strings.TrimSpace(p.Name),
+				Level:            p.Level,
+				Status:           "waiting",
+				WaitStartTime:    now,
+				TotalGames:       0,
+				TotalWins:        0,
+				TotalWaitingTime: 0,
+			})
+		}
+
+		if err := tx.Commit(); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(insertedPlayers)
+	}
+}
+
 func setCORS(w http.ResponseWriter, r *http.Request) bool {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
@@ -239,6 +298,7 @@ func main() {
 	http.HandleFunc("/api/players", playersHandler)
 	http.HandleFunc("/api/history", historyHandler)
 	http.HandleFunc("/api/matches/finish", finishMatchHandler)
+	http.HandleFunc("/api/players/bulk", bulkPlayersHandler)
 
 	println("Go MySQL API is running on http://localhost:8080")
 	log.Fatal(http.ListenAndServe(":8080", nil))
